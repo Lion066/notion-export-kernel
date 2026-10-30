@@ -42,6 +42,8 @@ class NotionQuery:
         self.buffer = Buffer()
         # 通过search接口批量获取的页面编辑时间 {page_id: last_edited_time}
         self.page_edit_time = None
+        # 本次查询数据库得到的行（页面信息，公式和汇总属性是最新的） {page_id: page}
+        self.db_rows = {}
 
     def safe_save(self):
         self.buffer.save_buffer()
@@ -125,6 +127,8 @@ class NotionQuery:
 
     # 获取到所有的数据库数据(JSon格式)
     def query_database(self, database_id, db_q_filter="{}", db_q_sorts="[]", force_update=False):
+        # 数据库中的公式、汇总属性在数据库编辑时间不变时也会变化，使用缓存时也重新查询（每次请求100行）
+        force_update = force_update or NotionDump.USE_BUFFER
         # 添加缓存系统
         if not force_update and NotionDump.USE_BUFFER:
             if not self.buffer.select_buffer(database_id):
@@ -165,6 +169,8 @@ class NotionQuery:
             if NotionDump.USE_BUFFER:
                 # 独立的page 更新页面状态
                 self.buffer.update_buffer(database_id)
+                for row in query_ret["results"]:
+                    self.db_rows[row["id"].replace('-', '')] = row
             return query_ret
         except APIResponseError as error:
             if error.code == APIErrorCode.ObjectNotFound:
@@ -225,6 +231,13 @@ class NotionQuery:
 
     # 获取Page的信息
     def retrieve_page(self, page_id):
+        # 数据库的行直接使用本次查询数据库得到的页面信息
+        if NotionDump.USE_BUFFER and page_id.replace('-', '') in self.db_rows:
+            retrieve_ret = self.db_rows[page_id.replace('-', '')]
+            common_op.debug_log("[##CACHE] load page from database query " + page_id, level=NotionDump.DUMP_MODE_DEFAULT)
+            self.__save_to_json(retrieve_ret, page_id, prefix="retrieve_page_")
+            self.buffer.add_buffer(page_id, retrieve_ret["last_edited_time"])
+            return retrieve_ret
         # 页面编辑时间与缓存一致时直接使用缓存的页面信息
         if NotionDump.USE_BUFFER:
             if self.page_edit_time is None:
