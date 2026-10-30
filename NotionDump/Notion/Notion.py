@@ -40,6 +40,8 @@ class NotionQuery:
         self.friendly_time = internal_var.FRIENDLY_USE_API
 
         self.buffer = Buffer()
+        # 通过search接口批量获取的页面编辑时间 {page_id: last_edited_time}
+        self.page_edit_time = None
 
     def safe_save(self):
         self.buffer.save_buffer()
@@ -201,8 +203,40 @@ class NotionQuery:
                                 level=NotionDump.DUMP_MODE_DEFAULT)
         return None
 
+    # 通过search接口分页获取所有可访问页面的编辑时间（每次100条），避免逐个retrieve页面
+    def __prefetch_page_edit_time(self):
+        self.page_edit_time = {}
+        query_post = {"filter": {"property": "object", "value": "page"}, "page_size": 100}
+        try:
+            while True:
+                self.__friendly_use_api()
+                query_ret = self.client.search(**query_post)
+                for item in query_ret["results"]:
+                    if "last_edited_time" in item:
+                        self.page_edit_time[item["id"].replace('-', '')] = item["last_edited_time"]
+                if not query_ret["has_more"] or query_ret["next_cursor"] is None:
+                    break
+                query_post["start_cursor"] = query_ret["next_cursor"]
+        except Exception as e:
+            common_op.debug_log(e, level=NotionDump.DUMP_MODE_DEFAULT)
+            common_op.debug_log("prefetch page edit time fail, fallback to retrieve every page", level=NotionDump.DUMP_MODE_DEFAULT)
+            self.page_edit_time = {}
+        common_op.debug_log("prefetch page edit time, count=" + str(len(self.page_edit_time)), level=NotionDump.DUMP_MODE_DEFAULT)
+
     # 获取Page的信息
     def retrieve_page(self, page_id):
+        # 页面编辑时间与缓存一致时直接使用缓存的页面信息
+        if NotionDump.USE_BUFFER:
+            if self.page_edit_time is None:
+                self.__prefetch_page_edit_time()
+            edit_time = self.page_edit_time.get(page_id.replace('-', ''))
+            if edit_time is not None and page_id in self.buffer.buffer_map \
+                    and self.buffer.buffer_map[page_id]["last_edited_time"] == edit_time:
+                load = self.__load_from_json(page_id, prefix="retrieve_page_")
+                if load is not None:
+                    common_op.debug_log("[##CACHE] cached and load page " + page_id, level=NotionDump.DUMP_MODE_DEFAULT)
+                    return load
+
         self.__friendly_use_api()
         try:
             retrieve_ret = self.client.pages.retrieve(page_id=page_id)
