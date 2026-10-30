@@ -299,6 +299,19 @@ class NotionQuery:
                 self.buffer.update_buffer(download_id)
             return download_name
         except urllib.error.HTTPError as e:
+            # Notion存储的文件链接有时效，缓存中的链接过期后重新获取块中的链接再下载一次
+            if e.code == 403:
+                new_url = self.__refresh_file_url(download_id)
+                if new_url != "":
+                    try:
+                        urllib.request.urlretrieve(quote(new_url, safe='/:?=&%'), download_name)
+                        common_op.debug_log("download name " + download_name + " retry with new url success",
+                                            level=NotionDump.DUMP_MODE_DEFAULT)
+                        if NotionDump.USE_BUFFER:
+                            self.buffer.update_buffer(download_id)
+                        return download_name
+                    except Exception as retry_e:
+                        common_op.debug_log(retry_e, level=NotionDump.DUMP_MODE_DEFAULT)
             common_op.debug_log("download name " + download_name + " get error:HTTPError",
                                 level=NotionDump.DUMP_MODE_DEFAULT)
             common_op.debug_log("download url " + file_url + " get error:HTTPError",
@@ -327,6 +340,19 @@ class NotionQuery:
                                 level=NotionDump.DUMP_MODE_DEFAULT)
             common_op.debug_log("download url " + file_url + " get error:Exception",
                                 level=NotionDump.DUMP_MODE_DEFAULT)
+            common_op.debug_log(e, level=NotionDump.DUMP_MODE_DEFAULT)
+        return ""
+
+    # 重新获取图片/文件块，返回其中最新的文件链接（数据库属性中的文件不是块，获取失败返回空）
+    def __refresh_file_url(self, block_id):
+        self.__friendly_use_api()
+        try:
+            block = self.client.blocks.retrieve(block_id=block_id)
+            block_type = block["type"]
+            file_type = block[block_type]["type"]
+            return block[block_type][file_type]["url"]
+        except Exception as e:
+            common_op.debug_log("refresh file url fail, id=" + block_id, level=NotionDump.DUMP_MODE_DEFAULT)
             common_op.debug_log(e, level=NotionDump.DUMP_MODE_DEFAULT)
         return ""
 
