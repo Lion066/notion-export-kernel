@@ -14,6 +14,9 @@ import NotionDump
 from NotionDump.Notion.Buffer import Buffer
 from NotionDump.utils import common_op, internal_var
 
+# 预取页面编辑时间时，单页请求失败后的最大尝试次数
+PREFETCH_RETRY = 4
+
 
 class NotionQuery:
     def __init__(self, token, client_handle=None, async_api=False):
@@ -215,8 +218,18 @@ class NotionQuery:
         query_post = {"filter": {"property": "object", "value": "page"}, "page_size": 100}
         try:
             while True:
-                self.__friendly_use_api()
-                query_ret = self.client.search(**query_post)
+                # 网络偶发中断（如代理断开）时重试当前这一页，不放弃已取得的结果
+                for retry in range(PREFETCH_RETRY):
+                    try:
+                        self.__friendly_use_api()
+                        query_ret = self.client.search(**query_post)
+                        break
+                    except Exception as e:
+                        if retry == PREFETCH_RETRY - 1:
+                            raise
+                        common_op.debug_log("prefetch retry " + str(retry + 1) + ": " + str(e),
+                                            level=NotionDump.DUMP_MODE_DEFAULT)
+                        sleep(5 * (retry + 1))
                 for item in query_ret["results"]:
                     if "last_edited_time" in item:
                         self.page_edit_time[item["id"].replace('-', '')] = item["last_edited_time"]
